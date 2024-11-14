@@ -7,6 +7,13 @@ from langchain.chains import ConversationalRetrievalChain
 import chromadb
 import tempfile
 import shutil
+import __main__
+__main__.__file__ = 'streamlit_app.py'
+
+# Configure ChromaDB to use the correct SQLite
+import sys
+import pysqlite3
+sys.modules["sqlite3"] = pysqlite3
 
 class DocumentProcessor:
     def __init__(self):
