@@ -1,19 +1,13 @@
 import os
 from langchain_openai import OpenAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.vectorstores.chroma import Chroma
 from langchain_openai import ChatOpenAI
 from langchain.chains import ConversationalRetrievalChain
-import chromadb
+from langchain.vectorstores import FAISS
 import tempfile
 import shutil
 import __main__
 __main__.__file__ = 'streamlit_app.py'
-
-# Configure ChromaDB to use the correct SQLite
-import sys
-import pysqlite3
-sys.modules["sqlite3"] = pysqlite3
 
 class DocumentProcessor:
     def __init__(self):
@@ -25,13 +19,13 @@ class DocumentProcessor:
         self._initialize_db()
 
     def _initialize_db(self):
-        """Initialize the ChromaDB vector store"""
+        """Initialize the FAISS vector store"""
         try:
-            # Create a temporary directory for ChromaDB
+            # Create a temporary directory
             self.temp_dir = tempfile.mkdtemp()
             
-            # Try to initialize ChromaDB with the temporary directory
-            self.db = Chroma(persist_directory=self.temp_dir, embedding_function=self.embeddings)
+            # Initialize QA chain with empty FAISS index
+            self.db = FAISS.from_texts(["placeholder"], self.embeddings)
             
             # Initialize QA chain
             self.qa_chain = ConversationalRetrievalChain.from_llm(
@@ -63,16 +57,8 @@ class DocumentProcessor:
                 print(f"Error processing file {file_path}: {e}")
 
         try:
-            # Create a new temporary directory if needed
-            if not self.temp_dir:
-                self.temp_dir = tempfile.mkdtemp()
-
             # Create or update the vector store
-            self.db = Chroma.from_texts(
-                texts,
-                self.embeddings,
-                persist_directory=self.temp_dir
-            )
+            self.db = FAISS.from_texts(texts, self.embeddings)
 
             # Initialize the QA chain
             self.qa_chain = ConversationalRetrievalChain.from_llm(
