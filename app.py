@@ -2,6 +2,7 @@ import streamlit as st
 import os
 from document_processor import DocumentProcessor
 import glob
+import traceback
 
 # Set OpenAI API key from Streamlit secrets
 os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
@@ -22,6 +23,8 @@ def load_documents_from_data():
     current_dir = os.path.dirname(os.path.abspath(__file__))
     data_dir = os.path.join(current_dir, 'data')
     
+    print(f"Looking for documents in: {data_dir}")
+    
     # Ensure data directory exists
     if not os.path.exists(data_dir):
         st.error(f"Data directory not found at {data_dir}")
@@ -29,6 +32,7 @@ def load_documents_from_data():
     
     # Get all .txt files
     text_files = glob.glob(os.path.join(data_dir, '*.txt'))
+    print(f"Found {len(text_files)} text files")
     
     if not text_files:
         st.warning("No text files found in the data directory.")
@@ -40,75 +44,97 @@ def initialize_processor():
     """Initialize the document processor"""
     if not st.session_state.document_processor:
         try:
+            print("Creating new DocumentProcessor instance...")
             st.session_state.document_processor = DocumentProcessor()
+            print("DocumentProcessor created successfully")
+            return True
         except Exception as e:
-            st.error(f"Error initializing document processor: {str(e)}")
+            error_msg = f"Error initializing document processor: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+            print(error_msg)
+            st.error(error_msg)
             return False
     return True
 
 def process_documents():
     """Process documents from data directory"""
     try:
+        print("Starting document processing...")
+        # Load documents
         files = load_documents_from_data()
         if not files:
-            return False, "No text files found in the data directory."
+            print("No files found to process")
+            return False
             
-        st.session_state.document_processor.process_documents(files)
-        st.session_state.files_processed = True
-        return True, f"Successfully processed {len(files)} documents!"
+        print(f"Processing {len(files)} files...")
+        # Process documents
+        success = st.session_state.document_processor.process_documents(files)
+        if success:
+            print("Document processing completed successfully")
+            st.session_state.files_processed = True
+            return True
+        print("Document processing failed")
+        return False
     except Exception as e:
-        return False, f"Error processing documents: {str(e)}"
+        error_msg = f"Error processing documents: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(error_msg)
+        st.error(error_msg)
+        return False
 
 def main():
     st.title("Bruce County Planning Assistant")
     
-    st.write("Welcome to the Bruce County Planning Assistant. This AI chatbot is here to help municipal planners and real estate developers navigate the process of building projects, from subdivisions to affordable rental units.")
-
-    # Initialize processor
+    # Initialize document processor
     if not initialize_processor():
-        st.error("Failed to initialize the document processor. Please check the logs for details.")
+        st.error("Failed to initialize document processor")
         return
-
-    # Process Documents Button
+        
+    # Process documents if not already done
     if not st.session_state.files_processed:
-        if st.button("Process Documents"):
-            with st.spinner("Processing documents..."):
-                success, message = process_documents()
-                if success:
-                    st.success(message)
-                else:
-                    st.error(message)
-    else:
-        if st.button("Reprocess Documents"):
-            with st.spinner("Reprocessing documents..."):
-                success, message = process_documents()
-                if success:
-                    st.success(message)
-                else:
-                    st.error(message)
-
-    # Chat messages
+        with st.spinner("Processing planning documents..."):
+            if process_documents():
+                st.success("Documents processed successfully!")
+            else:
+                st.error("Failed to process documents")
+                return
+    
+    # Display chat messages
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
-            st.write(message["content"])
-
+            st.markdown(message["content"])
+    
     # Chat input
-    if prompt := st.chat_input("Type your message here..."):
+    if prompt := st.chat_input("Ask a question about Bruce County planning:"):
+        # Add user message to chat history
         st.session_state.messages.append({"role": "user", "content": prompt})
         
-        if st.session_state.document_processor and st.session_state.files_processed:
-            with st.spinner("Thinking..."):
-                try:
-                    response = st.session_state.document_processor.get_answer(prompt)
-                    st.session_state.messages.append({"role": "assistant", "content": response["answer"]})
-                except Exception as e:
-                    error_msg = f"Error processing your question: {str(e)}"
-                    st.error(error_msg)
-                    st.session_state.messages.append({"role": "assistant", "content": error_msg})
-        else:
-            st.session_state.messages.append({"role": "assistant", "content": "Please process documents first."})
-        
-        st.experimental_rerun()
+        # Display user message
+        with st.chat_message("user"):
+            st.markdown(prompt)
+            
+        # Get bot response
+        with st.chat_message("assistant"):
+            message_placeholder = st.empty()
+            
+            try:
+                # Get answer from document processor
+                answer, sources = st.session_state.document_processor.get_answer(prompt, st.session_state.messages[:-1])
+                
+                # Format response with sources if available
+                response = answer
+                if sources:
+                    response += "\n\nSources:"
+                    for doc in sources:
+                        if hasattr(doc, "metadata") and "source" in doc.metadata:
+                            response += f"\n- {doc.metadata['source']}"
+                
+                message_placeholder.markdown(response)
+                
+                # Add assistant response to chat history
+                st.session_state.messages.append({"role": "assistant", "content": response})
+            except Exception as e:
+                error_msg = f"Error getting answer: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+                print(error_msg)
+                st.error(error_msg)
 
 if __name__ == "__main__":
     main()
