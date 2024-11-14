@@ -3,9 +3,6 @@ import os
 from document_processor import DocumentProcessor
 import glob
 
-# Set OpenAI API key from Streamlit secrets
-os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
-
 # Initialize session state
 if 'messages' not in st.session_state:
     st.session_state.messages = [
