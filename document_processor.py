@@ -1,155 +1,137 @@
 import os
-from typing import List
-from langchain.document_loaders import TextLoader
+import boto3
+from botocore.exceptions import ClientError
+from langchain_openai import OpenAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain.vectorstores import Chroma
-from langchain.chains import RetrievalQA
-from langchain.prompts import PromptTemplate
-from langchain.retrievers import ContextualCompressionRetriever
-from langchain.retrievers.document_compressors import LLMChainExtractor
-import os.path
+from langchain.vectorstores.chroma import Chroma
+from langchain_openai import ChatOpenAI
+from langchain.chains import ConversationalRetrievalChain
+import tempfile
 
 class DocumentProcessor:
-    def __init__(self, persist_dir: str = None):
+    def __init__(self):
         self.embeddings = OpenAIEmbeddings()
-        self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1500,
-            chunk_overlap=300,
-            length_function=len,
+        self.text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        self.s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
+            region_name=os.getenv('AWS_REGION', 'us-east-1')
         )
-        self.persist_dir = persist_dir or os.path.join(os.getcwd(), "chroma_db")
-        self.vector_store = None
+        self.bucket_name = os.getenv('AWS_BUCKET_NAME')
+        self.db = None
         self.qa_chain = None
-        self._initialize_from_persist_directory()
-    
-    def _initialize_from_persist_directory(self) -> None:
-        if os.path.exists(self.persist_dir):
+        self._initialize_db()
+
+    def _initialize_db(self):
+        """Initialize the ChromaDB vector store"""
+        if os.path.exists("chroma_db"):
+            self.db = Chroma(persist_directory="chroma_db", embedding_function=self.embeddings)
+            self.qa_chain = ConversationalRetrievalChain.from_llm(
+                ChatOpenAI(temperature=0, model_name="gpt-4"),
+                self.db.as_retriever(search_kwargs={"k": 6}),
+                return_source_documents=True,
+                verbose=False
+            )
+
+    def _download_from_s3(self):
+        """Download documents from S3 bucket"""
+        try:
+            # List all objects in the bucket
+            response = self.s3_client.list_objects_v2(Bucket=self.bucket_name)
+            
+            temp_files = []
+            for obj in response.get('Contents', []):
+                if obj['Key'].endswith('.txt'):  # Only process text files
+                    # Create a temporary file
+                    temp_file = tempfile.NamedTemporaryFile(delete=False)
+                    
+                    # Download the file from S3
+                    self.s3_client.download_file(
+                        self.bucket_name,
+                        obj['Key'],
+                        temp_file.name
+                    )
+                    temp_files.append(temp_file.name)
+            
+            return temp_files
+        except ClientError as e:
+            print(f"Error downloading from S3: {e}")
+            return []
+
+    def process_documents(self, local_files=None, directory=""):
+        """Process documents from either S3 or local files"""
+        all_files = []
+        
+        # Get files from S3 if configured
+        if self.bucket_name:
+            all_files.extend(self._download_from_s3())
+        
+        # Add local files if provided
+        if local_files:
+            all_files.extend(local_files)
+
+        if not all_files:
+            print("No documents found to process")
+            return
+
+        # Process all documents
+        texts = []
+        for file_path in all_files:
             try:
-                self.vector_store = Chroma(
-                    persist_directory=self.persist_dir,
-                    embedding_function=self.embeddings
-                )
-                self._initialize_qa_chain()
-                return
+                with open(file_path, 'r', encoding='utf-8') as file:
+                    text = file.read()
+                texts.extend(self.text_splitter.split_text(text))
             except Exception as e:
-                print(f"Error loading persisted vector store: {e}")
-        
-        print("No existing vector store found.")
-    
-    def _initialize_qa_chain(self) -> None:
-        template = """You are a knowledgeable assistant specializing in Bruce County real estate development regulations and processes. 
-        Use the following pieces of context to provide a detailed, well-structured answer to the question.
-        
-        When citing information, use the following format: [Document: filename.txt]. For example: "According to [Document: zoning_bylaws.txt], the minimum setback requirement is 10 meters."
-        
-        Context: {context}
-        
-        Question: {question}
-        
-        Please provide a comprehensive answer that:
-        1. Directly addresses the main question
-        2. Includes relevant details and examples
-        3. Cites specific documents for each major point using the [Document: filename] format
-        4. Explains any related processes or requirements
-        5. Highlights important considerations or exceptions
-        
-        Important Instructions:
-        - ALWAYS cite your sources using [Document: filename] format
-        - Include citations for each major point or requirement
-        - If different documents have conflicting information, mention this explicitly
-        - If you're unsure about something, say so clearly
-        - Organize the response with clear sections and bullet points when appropriate
-        
-        Answer: Let me provide a detailed response based on the available documentation.
+                print(f"Error processing file {file_path}: {e}")
 
-        """
-        
-        QA_PROMPT = PromptTemplate(
-            template=template,
-            input_variables=["context", "question"]
+        # Clean up temporary files from S3
+        if self.bucket_name:
+            for temp_file in all_files:
+                try:
+                    os.unlink(temp_file)
+                except:
+                    pass
+
+        # Create or update the vector store
+        self.db = Chroma.from_texts(
+            texts,
+            self.embeddings,
+            persist_directory="chroma_db"
+        )
+        self.db.persist()
+
+        # Initialize the QA chain
+        self.qa_chain = ConversationalRetrievalChain.from_llm(
+            ChatOpenAI(temperature=0, model_name="gpt-4"),
+            self.db.as_retriever(search_kwargs={"k": 6}),
+            return_source_documents=True,
+            verbose=False
         )
 
-        base_retriever = self.vector_store.as_retriever(
-            search_type="similarity",
-            search_kwargs={
-                "k": 8
-            }
-        )
-
-        llm = ChatOpenAI(temperature=0, model_name="gpt-3.5-turbo-16k")
-        compressor = LLMChainExtractor.from_llm(llm)
-
-        compression_retriever = ContextualCompressionRetriever(
-            base_compressor=compressor,
-            base_retriever=base_retriever
-        )
-        
-        self.qa_chain = RetrievalQA.from_chain_type(
-            llm=ChatOpenAI(
-                temperature=0,
-                model_name="gpt-3.5-turbo-16k",
-                model_kwargs={"top_p": 0.9}
-            ),
-            chain_type="stuff",
-            retriever=compression_retriever,
-            chain_type_kwargs={
-                "prompt": QA_PROMPT,
-            },
-            return_source_documents=True
-        )
-
-    def _get_formatted_filename(self, path: str) -> str:
-        """Convert a full path to just the filename."""
-        return os.path.basename(path)
-
-    def process_documents(self, uploaded_files: List[str], temp_dir: str) -> None:
-        documents = []
-        
-        for file_path in uploaded_files:
-            loader = TextLoader(file_path)
-            documents.extend(loader.load())
-
-        split_docs = self.text_splitter.split_documents(documents)
-        
-        # Update metadata to include just the filename
-        for doc in split_docs:
-            if 'source' in doc.metadata:
-                doc.metadata['source'] = self._get_formatted_filename(doc.metadata['source'])
-
-        self.vector_store = Chroma.from_documents(
-            documents=split_docs,
-            embedding=self.embeddings,
-            persist_directory=self.persist_dir
-        )
-        
-        self.vector_store.persist()
-        self._initialize_qa_chain()
-
-    def get_answer(self, question: str) -> dict:
+    def get_answer(self, question, chat_history=[]):
+        """Get answer for a question using the QA chain"""
         if not self.qa_chain:
             return {
                 "answer": "Please process documents first.",
-                "sources": ""
+                "sources": []
             }
-        
-        result = self.qa_chain({"query": question})
-        
-        # Extract unique sources
-        sources = []
-        for doc in result["source_documents"]:
-            if hasattr(doc, 'metadata') and 'source' in doc.metadata:
-                source = doc.metadata['source']
-                if source not in sources:
-                    sources.append(source)
-        
-        # Format sources as a bulleted list
-        formatted_sources = "\n\nSources consulted:\n" + "\n".join([f"• {source}" for source in sources])
-        
-        # Combine the answer with the sources list
-        full_response = result["result"] + formatted_sources
-        
-        return {
-            "answer": full_response,
-            "sources": "\n".join(sources)  # Keep this for compatibility
-        }
+
+        try:
+            result = self.qa_chain({"question": question, "chat_history": chat_history})
+            
+            # Extract source documents
+            sources = []
+            for doc in result.get("source_documents", []):
+                if hasattr(doc, "metadata") and "source" in doc.metadata:
+                    sources.append(doc.metadata["source"])
+            
+            return {
+                "answer": result["answer"],
+                "sources": list(set(sources))  # Remove duplicate sources
+            }
+        except Exception as e:
+            return {
+                "answer": f"An error occurred: {str(e)}",
+                "sources": []
+            }
