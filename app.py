@@ -3,11 +3,8 @@ import os
 from document_processor import DocumentProcessor
 import glob
 
-# Set API keys from Streamlit secrets
+# Set OpenAI API key from Streamlit secrets
 os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
-os.environ["AWS_ACCESS_KEY_ID"] = st.secrets["AWS_ACCESS_KEY_ID"]
-os.environ["AWS_SECRET_ACCESS_KEY"] = st.secrets["AWS_SECRET_ACCESS_KEY"]
-os.environ["AWS_BUCKET_NAME"] = st.secrets["AWS_BUCKET_NAME"]
 
 # Initialize session state
 if 'messages' not in st.session_state:
@@ -19,6 +16,11 @@ if 'document_processor' not in st.session_state:
 if 'files_processed' not in st.session_state:
     st.session_state.files_processed = False
 
+def load_documents_from_data():
+    data_dir = os.path.join(os.getcwd(), 'data')
+    text_files = glob.glob(os.path.join(data_dir, '*.txt'))
+    return text_files
+
 def initialize_processor():
     if not st.session_state.document_processor:
         st.session_state.document_processor = DocumentProcessor()
@@ -26,11 +28,14 @@ def initialize_processor():
             st.session_state.files_processed = True
 
 def process_documents():
-    """Process documents from S3"""
+    """Process documents from data directory"""
     try:
-        st.session_state.document_processor.process_documents()
-        st.session_state.files_processed = True
-        return True, "Successfully processed documents from S3!"
+        files = load_documents_from_data()
+        if files:
+            st.session_state.document_processor.process_documents(files)
+            st.session_state.files_processed = True
+            return True, f"Successfully processed {len(files)} documents!"
+        return False, "No text files found in the data directory."
     except Exception as e:
         return False, f"Error processing documents: {str(e)}"
 
@@ -44,7 +49,7 @@ def main():
     # Process Documents Button
     if not st.session_state.files_processed:
         if st.button("Process Documents"):
-            with st.spinner("Processing documents from S3..."):
+            with st.spinner("Processing documents..."):
                 success, message = process_documents()
                 if success:
                     st.success(message)
@@ -53,7 +58,7 @@ def main():
                     st.error(message)
     else:
         if st.button("Reprocess Documents"):
-            with st.spinner("Reprocessing documents from S3..."):
+            with st.spinner("Reprocessing documents..."):
                 success, message = process_documents()
                 if success:
                     st.success(message)

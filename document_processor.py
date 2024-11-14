@@ -1,24 +1,14 @@
 import os
-import boto3
-from botocore.exceptions import ClientError
 from langchain_openai import OpenAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.vectorstores.chroma import Chroma
 from langchain_openai import ChatOpenAI
 from langchain.chains import ConversationalRetrievalChain
-import tempfile
 
 class DocumentProcessor:
     def __init__(self):
         self.embeddings = OpenAIEmbeddings()
         self.text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        self.s3_client = boto3.client(
-            's3',
-            aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
-            aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
-            region_name=os.getenv('AWS_REGION', 'us-east-1')
-        )
-        self.bucket_name = os.getenv('AWS_BUCKET_NAME')
         self.db = None
         self.qa_chain = None
         self._initialize_db()
@@ -34,64 +24,21 @@ class DocumentProcessor:
                 verbose=False
             )
 
-    def _download_from_s3(self):
-        """Download documents from S3 bucket"""
-        try:
-            # List all objects in the bucket
-            response = self.s3_client.list_objects_v2(Bucket=self.bucket_name)
-            
-            temp_files = []
-            for obj in response.get('Contents', []):
-                if obj['Key'].endswith('.txt'):  # Only process text files
-                    # Create a temporary file
-                    temp_file = tempfile.NamedTemporaryFile(delete=False)
-                    
-                    # Download the file from S3
-                    self.s3_client.download_file(
-                        self.bucket_name,
-                        obj['Key'],
-                        temp_file.name
-                    )
-                    temp_files.append(temp_file.name)
-            
-            return temp_files
-        except ClientError as e:
-            print(f"Error downloading from S3: {e}")
-            return []
-
-    def process_documents(self, local_files=None, directory=""):
-        """Process documents from either S3 or local files"""
-        all_files = []
-        
-        # Get files from S3 if configured
-        if self.bucket_name:
-            all_files.extend(self._download_from_s3())
-        
-        # Add local files if provided
-        if local_files:
-            all_files.extend(local_files)
-
-        if not all_files:
-            print("No documents found to process")
+    def process_documents(self, files):
+        """Process documents from file paths"""
+        if not files:
+            print("No documents provided")
             return
 
         # Process all documents
         texts = []
-        for file_path in all_files:
+        for file_path in files:
             try:
                 with open(file_path, 'r', encoding='utf-8') as file:
                     text = file.read()
                 texts.extend(self.text_splitter.split_text(text))
             except Exception as e:
                 print(f"Error processing file {file_path}: {e}")
-
-        # Clean up temporary files from S3
-        if self.bucket_name:
-            for temp_file in all_files:
-                try:
-                    os.unlink(temp_file)
-                except:
-                    pass
 
         # Create or update the vector store
         self.db = Chroma.from_texts(
