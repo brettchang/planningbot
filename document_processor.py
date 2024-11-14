@@ -4,6 +4,9 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.vectorstores.chroma import Chroma
 from langchain_openai import ChatOpenAI
 from langchain.chains import ConversationalRetrievalChain
+import chromadb
+import tempfile
+import shutil
 
 class DocumentProcessor:
     def __init__(self):
@@ -11,18 +14,30 @@ class DocumentProcessor:
         self.text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         self.db = None
         self.qa_chain = None
+        self.temp_dir = None
         self._initialize_db()
 
     def _initialize_db(self):
         """Initialize the ChromaDB vector store"""
-        if os.path.exists("chroma_db"):
-            self.db = Chroma(persist_directory="chroma_db", embedding_function=self.embeddings)
+        try:
+            # Create a temporary directory for ChromaDB
+            self.temp_dir = tempfile.mkdtemp()
+            
+            # Try to initialize ChromaDB with the temporary directory
+            self.db = Chroma(persist_directory=self.temp_dir, embedding_function=self.embeddings)
+            
+            # Initialize QA chain
             self.qa_chain = ConversationalRetrievalChain.from_llm(
                 ChatOpenAI(temperature=0, model_name="gpt-4"),
                 self.db.as_retriever(search_kwargs={"k": 6}),
                 return_source_documents=True,
                 verbose=False
             )
+        except Exception as e:
+            print(f"Error initializing DB: {e}")
+            if self.temp_dir and os.path.exists(self.temp_dir):
+                shutil.rmtree(self.temp_dir)
+            self.temp_dir = None
 
     def process_documents(self, files):
         """Process documents from file paths"""
@@ -40,21 +55,31 @@ class DocumentProcessor:
             except Exception as e:
                 print(f"Error processing file {file_path}: {e}")
 
-        # Create or update the vector store
-        self.db = Chroma.from_texts(
-            texts,
-            self.embeddings,
-            persist_directory="chroma_db"
-        )
-        self.db.persist()
+        try:
+            # Create a new temporary directory if needed
+            if not self.temp_dir:
+                self.temp_dir = tempfile.mkdtemp()
 
-        # Initialize the QA chain
-        self.qa_chain = ConversationalRetrievalChain.from_llm(
-            ChatOpenAI(temperature=0, model_name="gpt-4"),
-            self.db.as_retriever(search_kwargs={"k": 6}),
-            return_source_documents=True,
-            verbose=False
-        )
+            # Create or update the vector store
+            self.db = Chroma.from_texts(
+                texts,
+                self.embeddings,
+                persist_directory=self.temp_dir
+            )
+
+            # Initialize the QA chain
+            self.qa_chain = ConversationalRetrievalChain.from_llm(
+                ChatOpenAI(temperature=0, model_name="gpt-4"),
+                self.db.as_retriever(search_kwargs={"k": 6}),
+                return_source_documents=True,
+                verbose=False
+            )
+        except Exception as e:
+            print(f"Error creating vector store: {e}")
+            if self.temp_dir and os.path.exists(self.temp_dir):
+                shutil.rmtree(self.temp_dir)
+            self.temp_dir = None
+            raise e
 
     def get_answer(self, question, chat_history=[]):
         """Get answer for a question using the QA chain"""
@@ -82,3 +107,8 @@ class DocumentProcessor:
                 "answer": f"An error occurred: {str(e)}",
                 "sources": []
             }
+
+    def __del__(self):
+        """Cleanup temporary directory when the object is destroyed"""
+        if self.temp_dir and os.path.exists(self.temp_dir):
+            shutil.rmtree(self.temp_dir)

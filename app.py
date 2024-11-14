@@ -24,8 +24,6 @@ def load_documents_from_data():
 def initialize_processor():
     if not st.session_state.document_processor:
         st.session_state.document_processor = DocumentProcessor()
-        if os.path.exists(os.path.join(os.getcwd(), "chroma_db")):
-            st.session_state.files_processed = True
 
 def process_documents():
     """Process documents from data directory"""
@@ -72,7 +70,7 @@ def main():
             st.write(message["content"])
 
     # Chat input
-    if prompt := st.text_input("Type your message here..."):
+    if prompt := st.chat_input("Type your message here..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         
         if st.session_state.document_processor and st.session_state.files_processed:
