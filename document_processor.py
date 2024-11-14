@@ -4,6 +4,12 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import ChatOpenAI
 from langchain.chains import ConversationalRetrievalChain
 from langchain_community.vectorstores import Chroma
+import sys
+import __main__
+
+# Handle SQLite version requirements for Streamlit
+__import__('pysqlite3')
+sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 
 class DocumentProcessor:
     def __init__(self):
